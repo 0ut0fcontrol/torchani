@@ -36,8 +36,8 @@ try:
 except NameError:
     path = os.getcwd()
 
-validation_path = "/home/yangjc/tmp/dud/ace/ligonly.train.h5"
-training_path = "/home/yangjc/tmp/dud/ace/ligonly.test.h5"
+validation_path = "dud/ace/ligonly.train.h5"
+training_path = "dud/ace/ligonly.test.h5"
 
 # checkpoint file to save model when validation RMSE improves
 model_checkpoint = 'model.pt'
