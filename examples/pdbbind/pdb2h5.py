@@ -28,10 +28,11 @@ def load_index(index_file):
 index = load_index(args.index)
 # print(index)
 
+alltype = set()
 h5 = h5py.File(args.output + '.h5')
 print("All data save in " + h5.filename)
 for pdb_id, logK in index:
-    print(pdb_id, logK)
+    # print(pdb_id, logK)
     ligand = read("v2015/{}/{}_ligand.pdb".format(pdb_id, pdb_id))
     ligandS = [i.lower() for i in ligand.get_chemical_symbols()]
     ligandC = ligand.positions
@@ -40,6 +41,14 @@ for pdb_id, logK in index:
     pocketC = pocket.positions
     S = np.concatenate((ligandS, pocketS))
     C = np.array([np.concatenate((ligandC, pocketC))])
+    # alltype: {'N', 's', 'h', 'Na', 'Mg', 'C', 'o', 'Mn', 'O', 'S', 'Ca', 'Zn', 'n', 'f', 'P', 'c', 'br', 'i', 'p', 'cl', 'H'}
+    # alltype: ['C', 'Cd', 'Co', 'Cs', 'Cu', 'Fe', 'H', 'Hg', 'K', 'M', 'N', 'Ni', 'O', 'P', 'S', 'Se', 'Sr', 'c', 'h', 'n', 'o', 'p', 's', 'x']
+    metal = ('Na', 'Mg', 'Mn', 'Ca', 'Zn', 'Co', 'Cd', 'Cs', 'Cu', 'Fe', 'Hg', 'Ni', 'Sr', 'K')
+    halogen = ('f', 'cl', 'br', 'i')
+    S[np.isin(S, metal)] = 'M'
+    S[np.isin(S, halogen)] = 'x'
+    S[S=='Se'] = 'S'
+    alltype.update(S)
     noH = np.logical_and(S != 'H', S != 'h')
     S = S[noH]
     C = C[:,noH]
@@ -48,7 +57,7 @@ for pdb_id, logK in index:
     g.create_dataset('energies', data=[logK])
     g.create_dataset('species', data=S)
     g.create_dataset('coordinates', data=C)
-
+print("alltype: {}".format(sorted(alltype)))
 np.random.seed(args.split_seed)
 pdb_ids = np.array([pdb_id for (pdb_id, logK) in index])
 n = len(pdb_ids)
