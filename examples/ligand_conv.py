@@ -17,6 +17,7 @@ import timeit
 import tensorboardX
 import os
 import ignite.contrib.handlers
+from pearson import PearsonMetric
 
 
 ###############################################################################
@@ -34,14 +35,32 @@ try:
     path = os.path.dirname(os.path.realpath(__file__))
 except NameError:
     path = os.getcwd()
-training_path = os.path.join(path, '../dataset/ani_gdb_s01.h5')
-validation_path = os.path.join(path, '../dataset/ani_gdb_s01.h5')
+# training_path = "pdbbind/ligrec/core.train.h5"
+# validation_path = "pdbbind/ligrec/core.test.h5"
+
+# training_path = "pdbbind/ligrec/refined-core-ligand.h5"
+# validation_path = "pdbbind/ligrec/core.h5"
+
+# training_path = "pdbbind/ligrec/refined.train.h5"
+# validation_path = "pdbbind/ligrec/refined.test.h5"
+
+validation_path = "pdbbind/ligrec/core.h5"
+training_path = "pdbbind/ligrec/refined-core-ligand.h5"
+
+# training_path = "pdbbind/ligonly/refined.train.h5"
+# validation_path = "pdbbind/ligonly/refined.test.h5"
+
+# training_path = "pdbbind/ligonly/refined-core-ligand.h5"
+# validation_path = "pdbbind/ligonly/core.h5"
+
+# validation_path = "pdbbind/ligonly/core.h5"
+# training_path = "pdbbind/ligonly/refined-core-ligand.h5"
 
 # checkpoint file to save model when validation RMSE improves
 model_checkpoint = 'model.pt'
 
 # max epochs to run the training
-max_epochs = 20
+max_epochs = 100
 
 # Compute training RMSE every this steps. Since the training set is usually
 # huge and the loss funcition does not directly gives us RMSE, we need to
@@ -52,7 +71,7 @@ training_rmse_every = 5
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # batch size
-batch_size = 1024
+batch_size = 64
 
 # log directory for tensorboardX
 log = 'runs'
@@ -61,10 +80,11 @@ log = 'runs'
 ###############################################################################
 # Now let's read our constants and self energies from constant files and
 # construct AEV computer.
-const_file = os.path.join(path, '../torchani/resources/ani-1x_dft_x8ens/rHCNO-5.2R_16-3.5A_a4-8.params')  # noqa: E501
-sae_file = os.path.join(path, '../torchani/resources/ani-1x_dft_x8ens/sae_linfit.dat')  # noqa: E501
+const_file = os.path.join(path, 'pdbbind/rHCNO-5.2R_16-3.5A_a4-8.params')  # noqa: E501
+sae_file = os.path.join(path, 'pdbbind/sae_linfit.dat')  # noqa: E501
 consts = torchani.neurochem.Constants(const_file)
-aev_computer = torchani.AEVComputer(**consts)
+from torchani.aev import ligand_neighborlist
+aev_computer = torchani.AEVComputer(**consts, neighborlist_computer=ligand_neighborlist)
 energy_shifter = torchani.neurochem.load_sae(sae_file)
 
 
@@ -73,7 +93,8 @@ energy_shifter = torchani.neurochem.load_sae(sae_file)
 # size of neural network for all atom types, but this is not necessary.
 def atomic():
     model = torch.nn.Sequential(
-        torch.nn.Linear(384, 128),
+        #torch.nn.Linear(384, 128),
+        torch.nn.Linear(1008, 128),
         torch.nn.CELU(0.1),
         torch.nn.Linear(128, 128),
         torch.nn.CELU(0.1),
@@ -84,7 +105,7 @@ def atomic():
     return model
 
 
-nn = torchani.ANIModel([atomic() for _ in range(4)])
+nn = torchani.ANIModel([atomic() for _ in range(7)])
 print(nn)
 
 ###############################################################################
@@ -109,11 +130,13 @@ writer = tensorboardX.SummaryWriter(log_dir=log)
 # correspond to ``1``, etc.
 training = torchani.data.BatchedANIDataset(
     training_path, consts.species_to_tensor, batch_size, device=device,
-    transform=[energy_shifter.subtract_from_dataset])
+    # transform=[energy_shifter.subtract_from_dataset])
+    transform=[])
 
 validation = torchani.data.BatchedANIDataset(
     validation_path, consts.species_to_tensor, batch_size, device=device,
-    transform=[energy_shifter.subtract_from_dataset])
+    # transform=[energy_shifter.subtract_from_dataset])
+    transform=[])
 
 ###############################################################################
 # When iterating the dataset, we will get pairs of input and output
@@ -150,7 +173,8 @@ evaluator = ignite.engine.create_supervised_evaluator(container, metrics={
         'RMSE': torchani.ignite.RMSEMetric('energies')
     })
 
-
+# test_pred = model(next(validation))
+# print(test_pred)
 ###############################################################################
 # Let's add a progress bar for the trainer
 pbar = ignite.contrib.handlers.ProgressBar()
@@ -169,20 +193,24 @@ def validation_and_checkpoint(trainer):
         evaluator = ignite.engine.create_supervised_evaluator(
             container,
             metrics={
-                'RMSE': torchani.ignite.RMSEMetric('energies')
+                #'RMSE': torchani.ignite.RMSEMetric('energies'),
+                'pearson': PearsonMetric('energies')
             }
         )
         evaluator.run(dataset)
         metrics = evaluator.state.metrics
-        rmse = hartree2kcal(metrics['RMSE'])
+        # rmse = hartree2kcal(metrics['RMSE'])
+        # rmse = metrics['RMSE']
+        rmse = metrics['pearson']
         writer.add_scalar(name, rmse, trainer.state.epoch)
 
     # compute validation RMSE
-    evaluate(validation, 'validation_rmse_vs_epoch')
+    evaluate(validation, 'validation_pearson_vs_epoch')
 
     # compute training RMSE
-    if trainer.state.epoch % training_rmse_every == 1:
-        evaluate(training, 'training_rmse_vs_epoch')
+    #if trainer.state.epoch % training_rmse_every == 1:
+    #    evaluate(training, 'training_rmse_vs_epoch')
+    evaluate(training, 'training_pearson_vs_epoch')
 
     # checkpoint model
     torch.save(nn.state_dict(), model_checkpoint)

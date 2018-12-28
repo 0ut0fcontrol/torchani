@@ -41,8 +41,52 @@ def default_neighborlist(species, coordinates, cutoff):
     # https://github.com/pytorch/pytorch/pull/9532
     indices_ = indices.unsqueeze(-1).expand(-1, -1, -1, 3)
     neighbor_coordinates = vec.gather(-2, indices_)
-    return neighbor_species, neighbor_distances, neighbor_coordinates
+    return species, neighbor_species, neighbor_distances, neighbor_coordinates
 
+def ligand_neighborlist(species, coordinates, cutoff):
+    """Default neighborlist computer"""
+    species_sorted, species_indices = species.sort(-1)
+    has_ligand = (species_sorted >= 1000).any(dim=0).nonzero().squeeze()
+    
+    ligand_species = species_sorted.index_select(-1, has_ligand)
+    # convert all protein atoms in ligand species into dummy.
+    ligand_species[ligand_species<1000] = -1
+    # convert all ligand atom to normal atom type.
+    ligand_species[ligand_species>=1000] -= 1000
+    species[species>=1000] -= 1000
+
+    # use sorted indices to gather non sorted coord.
+    ligand_indices = species_indices.index_select(-1, has_ligand)
+    ligand_indices = ligand_indices.unsqueeze(-1).expand(-1, -1, 3)
+    ligand_coordinates = coordinates.gather(1, ligand_indices)
+    
+    vec = ligand_coordinates.unsqueeze(2) - coordinates.unsqueeze(1)
+    # vec has hape (conformations, atoms, atoms, 3) storing Rij vectors
+
+    distances = vec.norm(2, -1)
+    # distances has shape (conformations, atoms, atoms) storing Rij distances
+
+    padding_mask = (species == -1).unsqueeze(1)
+    distances = distances.masked_fill(padding_mask, math.inf)
+
+    distances, indices = distances.sort(-1)
+
+    min_distances, _ = distances.flatten(end_dim=1).min(0)
+    in_cutoff = (min_distances <= cutoff).nonzero().flatten()[1:]
+    indices = indices.index_select(-1, in_cutoff)
+
+    # TODO: remove this workaround after gather support broadcasting
+    atoms = ligand_coordinates.shape[1]
+    species_ = species.unsqueeze(1).expand(-1, atoms, -1)
+    neighbor_species = species_.gather(-1, indices)
+
+    neighbor_distances = distances.index_select(-1, in_cutoff)
+
+    # TODO: remove this workaround when gather support broadcasting
+    # https://github.com/pytorch/pytorch/pull/9532
+    indices_ = indices.unsqueeze(-1).expand(-1, -1, -1, 3)
+    neighbor_coordinates = vec.gather(-2, indices_)
+    return ligand_species, neighbor_species, neighbor_distances, neighbor_coordinates
 
 class AEVComputer(torch.nn.Module):
     r"""The AEV computer that takes coordinates as input and outputs aevs.
@@ -195,7 +239,7 @@ class AEVComputer(torch.nn.Module):
         before sorting.
         """
         max_cutoff = max([self.Rcr, self.Rca])
-        species_, distances, vec = self.neighborlist(species, coordinates,
+        species, neighbor_species, distances, vec = self.neighborlist(species, coordinates,
                                                      max_cutoff)
         radial_terms = self._radial_subaev_terms(distances)
 
@@ -207,7 +251,7 @@ class AEVComputer(torch.nn.Module):
         # (conformations, atoms, pairs, ``self.angular_sublength()``)
         # (conformations, atoms, neighbors)
         # (conformations, atoms, pairs)
-        return radial_terms, angular_terms, species_
+        return radial_terms, angular_terms, species, neighbor_species
 
     def _combinations(self, tensor, dim=0):
         # TODO: remove this when combinations is merged into PyTorch
@@ -307,14 +351,16 @@ class AEVComputer(torch.nn.Module):
         """
         species, coordinates = species_coordinates
 
-        present_species = utils.present_species(species)
-
-        radial_terms, angular_terms, species_ = \
+        radial_terms, angular_terms, ligand_species, neighbor_species = \
             self._terms_and_indices(species, coordinates)
-        mask_r = self._compute_mask_r(species_)
-        mask_a = self._compute_mask_a(species_, present_species)
+        
+        # ligand_species will less than or equal to species.
+        present_species = utils.present_species(ligand_species)
+        
+        mask_r = self._compute_mask_r(neighbor_species)
+        mask_a = self._compute_mask_a(neighbor_species, present_species)
 
         radial, angular = self._assemble(radial_terms, angular_terms,
                                          present_species, mask_r, mask_a)
         fullaev = torch.cat([radial, angular], dim=2)
-        return species, fullaev
+        return ligand_species, fullaev

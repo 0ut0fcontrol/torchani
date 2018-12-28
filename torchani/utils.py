@@ -163,6 +163,7 @@ class ChemicalSymbolsToInts:
         self.rev_species = {}
         for i, s in enumerate(all_species):
             self.rev_species[s] = i
+            self.rev_species[s.lower()] = i + 1000
 
     def __call__(self, species):
         """Convert species from squence of strings to 1D tensor"""
